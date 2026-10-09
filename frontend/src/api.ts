@@ -112,11 +112,12 @@ export function uploadVideo(
 
 export function startSample(settings: Settings): Promise<Job> {
   const body = new FormData();
+  // The sample reel is ~28s. Keep a tight window so the demo lands on a real hook.
   appendSettings(body, {
     ...settings,
-    clip_count: Math.min(settings.clip_count, 3),
-    min_len: Math.min(settings.min_len, 8),
-    max_len: Math.max(settings.max_len, 16),
+    clip_count: Math.min(settings.clip_count, 2),
+    min_len: 8,
+    max_len: 16,
     quality: "fast",
     llm_provider: settings.llm_provider === "auto" ? "heuristic" : settings.llm_provider,
     use_signals: false,
