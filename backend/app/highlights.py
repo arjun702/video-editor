@@ -227,19 +227,22 @@ def _public_score(raw: float) -> float:
 
 
 def _title(words: list[Word]) -> str:
-    if not words:
+    clean = [word for word in words if normalize_token(word.text) not in FILLER_TOKENS]
+    if not clean:
+        clean = list(words)
+    if not clean:
         return "Untitled hook"
-    size = min(6, len(words))
+    size = min(6, len(clean))
     best_score = -1.0
     best: list[Word] | None = None
-    for index in range(0, len(words) - size + 1):
-        chunk = words[index : index + size]
+    for index in range(0, len(clean) - size + 1):
+        chunk = clean[index : index + size]
         score = sum(HOOK_WEIGHTS.get(normalize_token(word.text), 0.0) for word in chunk)
         # Prefer an earlier slice when scores tie so the title opens the thought.
         if score > best_score:
             best_score = score
             best = chunk
-    chosen = list(best or words[:size])
+    chosen = list(best or clean[:size])
     while len(chosen) > 3 and HOOK_WEIGHTS.get(normalize_token(chosen[0].text), 0) == 0:
         chosen = chosen[1:]
     if len(chosen) > 5:

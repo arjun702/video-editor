@@ -122,6 +122,19 @@ def pytest_approx_range(value: float):
     return pytest.approx(value, abs=0.05)
 
 
+def test_title_skips_filler_words():
+    words = [
+        Word("stop", 0.0, 0.3),
+        Word("um", 0.35, 0.5),
+        Word("scrolling", 0.55, 0.9),
+        Word("now", 0.95, 1.2),
+    ]
+    clips = heuristic_highlights(words, duration=1.3, min_len=1, max_len=2, count=1)
+    assert clips
+    assert "um" not in clips[0].title.lower()
+    assert "stop" in clips[0].title.lower()
+
+
 def test_scene_and_energy_signals_raise_the_score():
     words = _spoken([("here is a plain update about the roadmap and the team", 0.0)])
     duration = words[-1].end
