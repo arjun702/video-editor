@@ -8,7 +8,13 @@ from typing import Protocol
 
 import httpx
 
-from app.highlights import Highlight, frame_highlights, heuristic_highlights, parse_highlight_response
+from app.highlights import (
+    LENGTH_SLACK,
+    Highlight,
+    frame_highlights,
+    heuristic_highlights,
+    parse_highlight_response,
+)
 from app.transcript import Word
 
 log = logging.getLogger(__name__)
@@ -39,6 +45,14 @@ class HighlightModel(Protocol):
     def complete(self, prompt: str) -> str: ...
 
 
+class ModelBusy(RuntimeError):
+    """The model is reachable but overloaded, rate-limited, or the network dropped."""
+
+
+class HighlightModelError(RuntimeError):
+    """The highlight model could not produce clips. Shown on the job."""
+
+
 class GeminiProvider:
     name = "gemini"
 
@@ -52,12 +66,19 @@ class GeminiProvider:
             if extra not in models:
                 models.append(extra)
         last_error = "Gemini request failed"
+        busy = False
         for model in models:
             try:
                 return self._generate(prompt, model)
+            except ModelBusy as exc:
+                busy = True
+                last_error = str(exc)
+                log.warning("%s; trying the next Gemini model", last_error)
             except RuntimeError as exc:
                 last_error = str(exc)
                 log.warning("%s; trying the next Gemini model", last_error)
+        if busy:
+            raise ModelBusy(last_error)
         raise RuntimeError(last_error)
 
     def _generate(self, prompt: str, model: str) -> str:
@@ -76,10 +97,15 @@ class GeminiProvider:
         headers = {"x-goog-api-key": self.api_key, "Content-Type": "application/json"}
         with httpx.Client(timeout=90) as client:
             last_error = "Gemini request failed"
-            for attempt in range(6):
-                response = client.post(url, headers=headers, json=body)
-                if response.status_code in {429, 503}:
-                    last_error = f"Gemini {response.status_code}: {response.text[:400]}"
+            for attempt in range(3):
+                try:
+                    response = client.post(url, headers=headers, json=body)
+                except httpx.TransportError as exc:
+                    last_error = f"Gemini network error: {exc}"
+                    time.sleep(3 * (attempt + 1))
+                    continue
+                if response.status_code in {429, 500, 502, 503, 504}:
+                    last_error = f"Gemini {response.status_code}: {response.text[:300]}"
                     time.sleep(3 * (attempt + 1))
                     continue
                 if (
@@ -89,7 +115,7 @@ class GeminiProvider:
                     body["generationConfig"].pop("thinkingConfig", None)
                     continue
                 if response.is_error:
-                    raise RuntimeError(f"Gemini {response.status_code}: {response.text[:800]}")
+                    raise RuntimeError(f"Gemini {response.status_code}: {response.text[:300]}")
                 data = response.json()
                 candidate = (data.get("candidates") or [{}])[0]
                 parts = (candidate.get("content") or {}).get("parts") or []
@@ -103,7 +129,7 @@ class GeminiProvider:
                         f"Gemini returned an empty reply ({candidate.get('finishReason')})"
                     )
                 return text
-        raise RuntimeError(last_error)
+        raise ModelBusy(last_error)
 
 
 class OpenAIProvider:
@@ -163,22 +189,28 @@ class AnthropicProvider:
         return "\n".join(chunks)
 
 
-def transcript_for_prompt(words: list[Word], bucket: float = 8.0) -> str:
+def transcript_for_prompt(words: list[Word], pause: float = 0.7, max_line: float = 12.0) -> str:
+    """One line per sentence, each with its own start and end time."""
     if not words:
         return "(no speech)"
     lines: list[str] = []
     group: list[Word] = []
-    origin = words[0].start
+
+    def flush() -> None:
+        if group:
+            text = " ".join(item.text.strip() for item in group)
+            lines.append(f"[{group[0].start:.2f}-{group[-1].end:.2f}] {text}")
+            group.clear()
+
     for word in words:
-        if group and word.start - origin > bucket:
-            lines.append(
-                f"[{origin:.2f}-{group[-1].end:.2f}] " + " ".join(item.text for item in group)
-            )
-            group = []
-            origin = word.start
+        if group and (
+            word.start - group[-1].end >= pause or word.start - group[0].start >= max_line
+        ):
+            flush()
         group.append(word)
-    if group:
-        lines.append(f"[{origin:.2f}-{group[-1].end:.2f}] " + " ".join(item.text for item in group))
+        if word.text.strip().endswith((".", "?", "!")):
+            flush()
+    flush()
     return "\n".join(lines)
 
 
@@ -192,8 +224,9 @@ def build_highlight_prompt(
 ) -> str:
     return f"""You are a short-form editor cutting TikTok, Reels, and Shorts from a long video.
 
-Pick the {count} best moments. Aim for about {min_len:.0f}–{max_len:.0f} seconds, but go longer if you need a complete thought.
-Include the setup and the landing in the timestamps yourself. Cut on a pause or the end of a sentence, not mid-word. The open matters as much as the close.
+Pick the {count} best moments. Aim for about {min_len:.0f}–{max_len:.0f} seconds. Go longer only to finish a thought, and never past {max_len + LENGTH_SLACK:.0f} seconds.
+Each transcript line is one sentence with its start and end time. Start a clip at the start time of a line and end it at the end time of a line.
+Include the setup and the landing. The open matters as much as the close.
 The video is {duration:.1f} seconds long. Times are in seconds from the start.
 
 Return JSON only, with this shape:
@@ -224,8 +257,14 @@ def pick_highlights(
     anthropic_model: str = "claude-3-5-haiku-latest",
     energy: list[tuple[float, float]] | None = None,
     scenes: list[float] | None = None,
+    on_wait=None,
+    rounds: int = 4,
 ) -> tuple[list[Highlight], str]:
-    """Return highlights and the provider that actually produced them."""
+    """Return highlights and the provider that actually produced them.
+
+    With a model configured, a busy model is retried up to `rounds` times and a
+    rejected request fails the job. The local ranker only runs without a key.
+    """
     client = _client_for(
         provider_name,
         gemini_key=gemini_key,
@@ -239,11 +278,17 @@ def pick_highlights(
         prompt = build_highlight_prompt(
             words, count=count, min_len=min_len, max_len=max_len, duration=duration
         )
-        attempt = 0
-        while True:
-            attempt += 1
+        label = client.name.capitalize()
+        problem = "no reply"
+        for attempt in range(1, rounds + 1):
             try:
                 raw = client.complete(prompt)
+            except Exception as exc:
+                if not _is_transient(exc):
+                    raise HighlightModelError(f"{label} rejected the request. {exc}") from exc
+                problem = str(exc)
+                log.warning("%s attempt %s of %s: %s", label, attempt, rounds, problem)
+            else:
                 parsed = parse_highlight_response(
                     raw, duration=duration, min_len=min_len, max_len=max_len, limit=count
                 )
@@ -258,14 +303,22 @@ def pick_highlights(
                         ),
                         client.name,
                     )
+                problem = "the reply had no usable clips"
                 log.warning(
-                    "Gemini reply was not usable (attempt %s). Retrying. raw=%s",
+                    "%s attempt %s of %s: no usable clips. raw=%s",
+                    label,
                     attempt,
+                    rounds,
                     (raw or "")[:500],
                 )
-            except Exception as exc:
-                log.warning("Gemini attempt %s failed: %s. Retrying.", attempt, exc)
-            time.sleep(min(20.0, 2.0 * attempt))
+            if attempt < rounds:
+                if on_wait:
+                    on_wait(f"{label} is busy. Trying again ({attempt + 1} of {rounds})")
+                time.sleep(10.0 * attempt)
+        raise HighlightModelError(
+            f"{label} did not return clips after {rounds} tries ({problem[:200]}). "
+            "Try again in a few minutes."
+        )
 
     local = heuristic_highlights(
         words,
@@ -277,6 +330,15 @@ def pick_highlights(
         scenes=scenes,
     )
     return local, "heuristic"
+
+
+def _is_transient(exc: Exception) -> bool:
+    if isinstance(exc, (ModelBusy, httpx.TransportError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        return status == 429 or status >= 500
+    return False
 
 
 def _client_for(

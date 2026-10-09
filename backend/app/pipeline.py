@@ -8,7 +8,7 @@ from pathlib import Path
 
 from app.config import Settings, get_settings
 from app.highlights import Highlight
-from app.media import MediaError, audio_energy, probe, scene_changes
+from app.media import MediaError, audio_energy, probe, scene_changes, shot_cuts
 from app.providers import pick_highlights, resolve_provider
 from app.reframe import track_subject
 from app.render import output_size, render_clip
@@ -128,6 +128,7 @@ def process_source(
         anthropic_model=config.anthropic_model,
         energy=energy,
         scenes=scenes,
+        on_wait=lambda detail: stage("highlighting", 0.55, detail),
     )
     if not highlights:
         raise MediaError("Nothing in this video scored as a short. Try a wider length range.")
@@ -175,7 +176,12 @@ def process_source(
 
 def _safe_track(source: Path, highlight: Highlight) -> list[tuple[float, float]]:
     try:
-        return track_subject(str(source), highlight.start, highlight.end)
+        cuts = shot_cuts(source, highlight.start, highlight.end)
+    except Exception:
+        log.debug("shot detection skipped", exc_info=True)
+        cuts = []
+    try:
+        return track_subject(str(source), highlight.start, highlight.end, cuts=cuts)
     except Exception:
         log.debug("subject tracking skipped", exc_info=True)
         return []

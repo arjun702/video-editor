@@ -123,11 +123,7 @@ def _render_part(
     highlight_start: float,
 ) -> None:
     crop_w, crop_h = crop_size(frame_w, frame_h)
-    relative = []
-    for moment, center in track:
-        absolute = highlight_start + moment
-        if start - 0.25 <= absolute <= end + 0.25:
-            relative.append((absolute - start, center))
+    relative = [(highlight_start + moment - start, center) for moment, center in track]
     x_expr = crop_x_expression(relative, crop_w, frame_w)
     y_expr = crop_y_expression(frame_h, crop_h)
     filters = [

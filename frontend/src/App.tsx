@@ -55,6 +55,7 @@ export default function App() {
   }, [job]);
 
   const busy = pending !== null || (!!job && job.stage !== "done" && job.stage !== "error");
+  const lengthProblem = lengthError(settings);
 
   function remember(next: Job) {
     sessionStorage.setItem(STORAGE_KEY, next.id);
@@ -63,7 +64,11 @@ export default function App() {
   }
 
   async function onFile(file: File) {
-    if (!file) return;
+    if (!file || busy) return;
+    if (lengthProblem) {
+      setBanner(lengthProblem);
+      return;
+    }
     setPending("Uploading");
     setUpload(0);
     setBanner(null);
@@ -79,6 +84,10 @@ export default function App() {
   }
 
   async function onSample() {
+    if (lengthProblem) {
+      setBanner(lengthProblem);
+      return;
+    }
     setBanner(null);
     setPending("Building the sample reel");
     try {
@@ -107,7 +116,7 @@ export default function App() {
           </p>
         </div>
         <span className="hidden rounded-full border border-line px-3 py-1 text-xs uppercase tracking-[0.16em] text-mute sm:inline">
-          Local cutter
+          Local transcription
         </span>
       </header>
 
@@ -122,7 +131,7 @@ export default function App() {
           dragOver={dragOver}
           upload={upload}
           pending={pending}
-          busy={busy}
+          busy={busy || lengthProblem !== null}
           onBrowse={() => inputRef.current?.click()}
           onSample={onSample}
           onDrag={(over) => setDragOver(over)}
@@ -142,7 +151,12 @@ export default function App() {
       />
 
       {(!job || job.stage === "error") && (
-        <SettingsBar settings={settings} onChange={setSettings} disabled={busy} />
+        <SettingsBar
+          settings={settings}
+          onChange={setSettings}
+          disabled={busy}
+          problem={lengthProblem}
+        />
       )}
 
       {job && job.stage !== "done" && job.stage !== "error" && (
@@ -227,14 +241,23 @@ function Dropzone({
   );
 }
 
+function lengthError({ min_len, max_len }: Settings): string | null {
+  if (!(min_len >= 5 && min_len <= 90)) return "Shortest must be between 5 and 90 seconds.";
+  if (!(max_len >= 8 && max_len <= 120)) return "Longest must be between 8 and 120 seconds.";
+  if (min_len >= max_len) return "Shortest must be less than longest.";
+  return null;
+}
+
 function SettingsBar({
   settings,
   onChange,
   disabled,
+  problem,
 }: {
   settings: Settings;
   onChange: (next: Settings) => void;
   disabled: boolean;
+  problem: string | null;
 }) {
   const patch = (partial: Partial<Settings>) => onChange({ ...settings, ...partial });
   return (
@@ -267,6 +290,9 @@ function SettingsBar({
             disabled={disabled}
             onChange={(max_len) => patch({ max_len })}
           />
+          {problem && (
+            <p className="col-span-2 text-xs normal-case tracking-normal text-orange-200">{problem}</p>
+          )}
         </div>
         <SelectField
           label="Whisper"
@@ -305,15 +331,17 @@ function SettingsBar({
           <div className="mt-2 flex flex-wrap gap-2">
             {(
               [
-                ["hormozi", "Hormozi", "STOP SCROLLING"],
-                ["pop", "Pop", "WAIT FOR IT"],
-                ["clean", "Clean", "A quieter line"],
+                ["hormozi", "Hormozi"],
+                ["pop", "Pop"],
+                ["clean", "Clean"],
               ] as const
-            ).map(([id, label, sample]) => (
+            ).map(([id, label]) => (
               <button
                 key={id}
                 type="button"
                 disabled={disabled}
+                aria-pressed={settings.caption_style === id}
+                aria-label={`${label} captions`}
                 onClick={() => patch({ caption_style: id })}
                 className={`rounded-2xl border px-3 py-2 text-left ${
                   settings.caption_style === id ? "border-lime bg-lime/10" : "border-line"
@@ -338,7 +366,6 @@ function SettingsBar({
                       A quieter <span className="text-lime">line</span>
                     </>
                   )}
-                  <span className="sr-only">{sample}</span>
                 </span>
               </button>
             ))}
@@ -441,9 +468,11 @@ function ProgressPanel({ job }: { job: Job }) {
   return (
     <section className="rounded-[28px] border border-line bg-panel/80 p-6 sm:p-8">
       <div className="flex items-baseline justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <p className="text-xs uppercase tracking-[0.16em] text-mute">Cutting</p>
-          <h2 className="mt-1 font-display text-3xl italic text-ink">{job.filename}</h2>
+          <h2 className="mt-1 truncate font-display text-3xl italic text-ink" title={job.filename}>
+            {job.filename}
+          </h2>
         </div>
         <p className="font-display text-4xl italic text-lime">{percent}%</p>
       </div>
@@ -483,12 +512,15 @@ function Gallery({ job, onReset }: { job: Job; onReset: () => void }) {
   return (
     <section>
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <h2 className="font-display text-3xl italic text-ink">
             {job.clips.length} {job.clips.length === 1 ? "hook" : "hooks"}
           </h2>
-          <p className="mt-1 text-sm text-mute">
-            {job.filename} · {note}
+          <p className="mt-1 flex min-w-0 text-sm text-mute">
+            <span className="truncate" title={job.filename}>
+              {job.filename}
+            </span>
+            <span className="shrink-0">&nbsp;· {note}</span>
           </p>
         </div>
         <button type="button" onClick={onReset} className="text-sm text-lime">
@@ -500,7 +532,7 @@ function Gallery({ job, onReset }: { job: Job; onReset: () => void }) {
           The ranker did not keep any stretch. Widen the length range and try again.
         </p>
       ) : (
-        <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,280px))] gap-5">
           {job.clips.map((clip) => (
             <ClipCard key={clip.id} jobId={job.id} clip={clip} />
           ))}
@@ -520,7 +552,7 @@ function ClipCard({ jobId, clip }: { jobId: string; clip: Clip }) {
           controls
           playsInline
           preload="metadata"
-          src={`/api/jobs/${jobId}/clips/${clip.id}/preview`}
+          src={`/api/jobs/${jobId}/clips/${clip.id}/preview#t=0.5`}
         />
       </div>
       <div className="flex items-start justify-between gap-3 px-2 pt-3">

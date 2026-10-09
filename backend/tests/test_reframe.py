@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from app.reframe import crop_size, crop_x_expression, lock_to_biggest_face, motion_center, smooth_centers
+from app.reframe import crop_size, crop_x_expression, lock_to_biggest_face, motion_center
 
 
 def test_landscape_frame_crops_to_nine_sixteen():
@@ -33,8 +33,18 @@ def test_crop_x_centers_a_steady_subject():
     assert crop_x_expression([(0.0, 1200.0), (2.0, 1200.0)], crop_w=600, frame_w=1920) == "900"
 
 
-def test_crop_x_holds_a_fixed_offset_instead_of_panning_across_the_frame():
+def test_crop_x_jumps_at_a_shot_cut_instead_of_panning():
     expr = crop_x_expression([(0.0, 400.0), (2.0, 1600.0)], crop_w=600, frame_w=1920)
+    assert expr == "if(lt(t\\,2.000)\\,100\\,1300)"
+
+
+def test_crop_x_ignores_tiny_moves_between_shots():
+    expr = crop_x_expression([(0.0, 1200.0), (3.0, 1220.0)], crop_w=600, frame_w=1920)
+    assert expr == "900"
+
+
+def test_crop_x_uses_the_shot_already_on_screen_at_segment_start():
+    expr = crop_x_expression([(-4.0, 400.0), (-1.0, 1600.0)], crop_w=600, frame_w=1920)
     assert expr == "1300"
 
 
@@ -46,20 +56,22 @@ def test_lock_to_biggest_face_ignores_the_smaller_person():
         (1.2, 1510.0, 8200.0),
         (1.6, 390.0, 1900.0),
     ]
-    locked = lock_to_biggest_face(samples)
-    xs = [center for _, center in locked]
-    assert xs == [1500.0, 1510.0]
+    assert lock_to_biggest_face(samples) == 1510.0
+
+
+def test_lock_to_biggest_face_ignores_a_one_frame_false_positive():
+    samples = [(index * 0.4, 900.0 + index, 6000.0) for index in range(10)]
+    samples.append((2.0, 300.0, 20000.0))
+    assert 900.0 <= lock_to_biggest_face(samples) <= 910.0
+
+
+def test_lock_without_faces_returns_none():
+    assert lock_to_biggest_face([]) is None
 
 
 def test_missing_track_falls_back_to_center_crop():
     expr = crop_x_expression([], crop_w=600, frame_w=1920)
     assert expr == "(in_w-out_w)/2"
-
-
-def test_smooth_centers_dampen_jitter():
-    points = [(0.0, 0.0), (1.0, 100.0), (2.0, 0.0), (3.0, 100.0)]
-    smoothed = smooth_centers(points, window=3)
-    assert max(value for _, value in smoothed) < 100
 
 
 def test_motion_center_finds_a_bright_blob():

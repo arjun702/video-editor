@@ -1,7 +1,13 @@
 """Highlight JSON from an LLM, plus the local heuristic used when no key is set."""
 
-from app.highlights import frame_highlights, heuristic_highlights, parse_highlight_response
-from app.providers import resolve_provider
+from app.highlights import (
+    LENGTH_SLACK,
+    Highlight,
+    frame_highlights,
+    heuristic_highlights,
+    parse_highlight_response,
+)
+from app.providers import resolve_provider, transcript_for_prompt
 from app.transcript import Word
 
 
@@ -32,11 +38,43 @@ Sure — here are the cuts:
 """
 
 
-def test_overlong_clip_is_not_trimmed_to_max_len():
-    raw = '{"clips":[{"start":0,"end":50,"hook_score":80,"reason":"x","title":"x","mood":"hype"}]}'
-    clips = parse_highlight_response(raw, duration=60, min_len=8, max_len=20, limit=1)
-    assert clips[0].start == 0
-    assert clips[0].end == 50
+def test_long_clip_keeps_some_room_past_max_len_then_is_capped():
+    raw = '{"clips":[{"start":0,"end":30,"hook_score":80,"reason":"x","title":"x","mood":"hype"}]}'
+    clips = parse_highlight_response(raw, duration=120, min_len=8, max_len=20, limit=1)
+    assert clips[0].end == 30
+
+    raw = '{"clips":[{"start":0,"end":90,"hook_score":80,"reason":"x","title":"x","mood":"hype"}]}'
+    clips = parse_highlight_response(raw, duration=120, min_len=8, max_len=20, limit=1)
+    assert clips[0].end == 20 + LENGTH_SLACK
+
+
+def test_snapping_never_drops_a_clip_when_neighbours_collide():
+    words = [
+        Word("One", 10.0, 10.4),
+        Word("two", 10.5, 12.0),
+        Word("three", 12.1, 14.0),
+        Word("four.", 14.1, 16.0),
+    ]
+    picks = [
+        Highlight(10.4, 13.0, 80, "a", "First", "hype"),
+        Highlight(13.0, 16.0, 70, "b", "Second", "hype"),
+    ]
+    framed = frame_highlights(picks, words, duration=30, min_len=2, max_len=20)
+    assert [clip.title for clip in framed] == ["First", "Second"]
+    assert framed[0].end <= framed[1].start
+
+
+def test_prompt_transcript_has_one_timed_line_per_sentence():
+    words = [
+        Word("Hello", 0.0, 0.4),
+        Word("there.", 0.5, 0.9),
+        Word("Next", 1.0, 1.3),
+        Word("bit", 1.4, 1.8),
+    ]
+    assert transcript_for_prompt(words).splitlines() == [
+        "[0.00-0.90] Hello there.",
+        "[1.00-1.80] Next bit",
+    ]
 
 
 def test_frame_snaps_to_a_pause_not_a_fixed_pad():
@@ -49,8 +87,6 @@ def test_frame_snaps_to_a_pause_not_a_fixed_pad():
         Word("talking.", 11.6, 12.1),
         Word("Later", 18.0, 18.4),
     ]
-    from app.highlights import Highlight
-
     framed = frame_highlights(
         [Highlight(10.3, 11.05, 80, "claim", "Stop now", "hype")],
         words,

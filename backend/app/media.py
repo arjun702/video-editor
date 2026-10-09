@@ -127,6 +127,31 @@ def scene_changes(path: Path, max_duration: float = 8 * 60, threshold: float = 0
     return times
 
 
+def shot_cuts(path: Path, start: float, end: float, threshold: float = 0.3) -> list[float]:
+    """Camera cuts between start and end, in seconds relative to start."""
+    span = end - start
+    if span <= 0:
+        return []
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-ss",
+        f"{start:.3f}",
+        "-t",
+        f"{span:.3f}",
+        "-i",
+        str(path),
+        "-vf",
+        f"scale=320:-2,select='gt(scene,{threshold})',showinfo",
+        "-an",
+        "-f",
+        "null",
+        "-",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    return [float(match.group(1)) for match in re.finditer(r"pts_time:([0-9.]+)", proc.stderr or "")]
+
+
 def _parse_fps(value: str) -> float:
     if not value or value == "0/0":
         return 30.0

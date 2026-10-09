@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from app.silence import FILLER_TOKENS
 from app.transcript import Word, clamp, normalize_token
 
 MOODS = ("funny", "dramatic", "informative", "hype", "emotional", "inspiring")
+
+# How far past the requested longest length a clip may run to finish a thought.
+LENGTH_SLACK = 15.0
 
 HOOK_WEIGHTS = {
     "stop": 2.5,
@@ -104,8 +107,15 @@ def frame_highlights(
     min_len: float,
     max_len: float,
 ) -> list[Highlight]:
+    """Snap each pick to nearby pauses. Where two snapped clips collide, keep both
+    and fall back to the model's own boundary on the touching edges."""
     framed = [_frame_window(item, words, duration, min_len, max_len) for item in highlights]
-    return _take_non_overlapping(framed, len(framed))
+    order = sorted(range(len(framed)), key=lambda index: highlights[index].start)
+    for left, right in zip(order, order[1:]):
+        if framed[left].end > framed[right].start:
+            framed[left] = replace(framed[left], end=highlights[left].end)
+            framed[right] = replace(framed[right], start=highlights[right].start)
+    return framed
 
 
 def heuristic_highlights(
@@ -163,7 +173,8 @@ def _frame_window(
         return item
     ordered = sorted(words, key=lambda word: word.start)
     start = _snap_start(ordered, item.start, slack=slack, pause=pause)
-    end = _snap_end(ordered, item.end, duration, slack=slack, pause=pause)
+    limit = max(item.end, start + max_len + LENGTH_SLACK)
+    end = _snap_end(ordered, item.end, min(duration, limit), slack=slack, pause=pause)
     if end <= start:
         return item
     return Highlight(
@@ -420,6 +431,7 @@ def _coerce_highlight(
         return None
     if end - start < max(5.0, min_len - 5):
         return None
+    end = min(end, start + max_len + LENGTH_SLACK)
     mood = str(item.get("mood", "informative")).strip().lower()
     if mood not in MOODS:
         mood = "informative"
