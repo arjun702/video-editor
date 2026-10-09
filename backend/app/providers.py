@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Protocol
 
 import httpx
 
-from app.highlights import Highlight, heuristic_highlights, parse_highlight_response
+from app.highlights import Highlight, frame_highlights, heuristic_highlights, parse_highlight_response
 from app.transcript import Word
 
 log = logging.getLogger(__name__)
@@ -46,22 +47,63 @@ class GeminiProvider:
         self.model = model
 
     def complete(self, prompt: str) -> str:
+        models = [self.model]
+        for extra in ("gemini-flash-latest", "gemini-3.5-flash-lite"):
+            if extra not in models:
+                models.append(extra)
+        last_error = "Gemini request failed"
+        for model in models:
+            try:
+                return self._generate(prompt, model)
+            except RuntimeError as exc:
+                last_error = str(exc)
+                log.warning("%s; trying the next Gemini model", last_error)
+        raise RuntimeError(last_error)
+
+    def _generate(self, prompt: str, model: str) -> str:
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{self.model}:generateContent"
+            f"{model}:generateContent"
         )
         body = {
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {
                 "temperature": 0.4,
                 "responseMimeType": "application/json",
+                "thinkingConfig": {"thinkingBudget": 0},
             },
         }
+        headers = {"x-goog-api-key": self.api_key, "Content-Type": "application/json"}
         with httpx.Client(timeout=90) as client:
-            response = client.post(url, params={"key": self.api_key}, json=body)
-            response.raise_for_status()
-            data = response.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+            last_error = "Gemini request failed"
+            for attempt in range(6):
+                response = client.post(url, headers=headers, json=body)
+                if response.status_code in {429, 503}:
+                    last_error = f"Gemini {response.status_code}: {response.text[:400]}"
+                    time.sleep(3 * (attempt + 1))
+                    continue
+                if (
+                    response.status_code == 400
+                    and "thinkingConfig" in body["generationConfig"]
+                ):
+                    body["generationConfig"].pop("thinkingConfig", None)
+                    continue
+                if response.is_error:
+                    raise RuntimeError(f"Gemini {response.status_code}: {response.text[:800]}")
+                data = response.json()
+                candidate = (data.get("candidates") or [{}])[0]
+                parts = (candidate.get("content") or {}).get("parts") or []
+                text = "".join(
+                    part.get("text", "")
+                    for part in parts
+                    if isinstance(part, dict) and not part.get("thought")
+                )
+                if not text.strip():
+                    raise RuntimeError(
+                        f"Gemini returned an empty reply ({candidate.get('finishReason')})"
+                    )
+                return text
+        raise RuntimeError(last_error)
 
 
 class OpenAIProvider:
@@ -150,7 +192,8 @@ def build_highlight_prompt(
 ) -> str:
     return f"""You are a short-form editor cutting TikTok, Reels, and Shorts from a long video.
 
-Pick the {count} best moments. Each moment must be between {min_len:.0f} and {max_len:.0f} seconds.
+Pick the {count} best moments. Aim for about {min_len:.0f}–{max_len:.0f} seconds, but go longer if you need a complete thought.
+Include the setup and the landing in the timestamps yourself. Cut on a pause or the end of a sentence, not mid-word. The open matters as much as the close.
 The video is {duration:.1f} seconds long. Times are in seconds from the start.
 
 Return JSON only, with this shape:
@@ -158,7 +201,7 @@ Return JSON only, with this shape:
 
 mood must be one of: funny, dramatic, informative, hype, emotional, inspiring.
 hook_score is an integer 0-100. title is at most 8 words. reason is one sentence.
-Clips must not overlap. Prefer a claim, a turn, a number, or a question in the first line.
+Clips must not overlap.
 
 Transcript:
 {transcript_for_prompt(words)}
@@ -174,7 +217,7 @@ def pick_highlights(
     max_len: float,
     provider_name: str,
     gemini_key: str = "",
-    gemini_model: str = "gemini-2.0-flash",
+    gemini_model: str = "gemini-3.8-flash",
     openai_key: str = "",
     openai_model: str = "gpt-4o-mini",
     anthropic_key: str = "",
@@ -196,16 +239,33 @@ def pick_highlights(
         prompt = build_highlight_prompt(
             words, count=count, min_len=min_len, max_len=max_len, duration=duration
         )
-        try:
-            raw = client.complete(prompt)
-            parsed = parse_highlight_response(
-                raw, duration=duration, min_len=min_len, max_len=max_len, limit=count
-            )
-            if parsed:
-                return parsed, client.name
-            log.warning("highlight model returned nothing usable; using the local ranker")
-        except Exception:
-            log.exception("highlight model failed; using the local ranker")
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                raw = client.complete(prompt)
+                parsed = parse_highlight_response(
+                    raw, duration=duration, min_len=min_len, max_len=max_len, limit=count
+                )
+                if parsed:
+                    return (
+                        frame_highlights(
+                            parsed,
+                            words,
+                            duration=duration,
+                            min_len=min_len,
+                            max_len=max_len,
+                        ),
+                        client.name,
+                    )
+                log.warning(
+                    "Gemini reply was not usable (attempt %s). Retrying. raw=%s",
+                    attempt,
+                    (raw or "")[:500],
+                )
+            except Exception as exc:
+                log.warning("Gemini attempt %s failed: %s. Retrying.", attempt, exc)
+            time.sleep(min(20.0, 2.0 * attempt))
 
     local = heuristic_highlights(
         words,

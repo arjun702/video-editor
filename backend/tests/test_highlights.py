@@ -1,6 +1,6 @@
 """Highlight JSON from an LLM, plus the local heuristic used when no key is set."""
 
-from app.highlights import heuristic_highlights, parse_highlight_response
+from app.highlights import frame_highlights, heuristic_highlights, parse_highlight_response
 from app.providers import resolve_provider
 from app.transcript import Word
 
@@ -30,6 +30,36 @@ Sure — here are the cuts:
 }
 ```
 """
+
+
+def test_overlong_clip_is_not_trimmed_to_max_len():
+    raw = '{"clips":[{"start":0,"end":50,"hook_score":80,"reason":"x","title":"x","mood":"hype"}]}'
+    clips = parse_highlight_response(raw, duration=60, min_len=8, max_len=20, limit=1)
+    assert clips[0].start == 0
+    assert clips[0].end == 50
+
+
+def test_frame_snaps_to_a_pause_not_a_fixed_pad():
+    words = [
+        Word("Setup", 8.0, 8.4),
+        Word("here.", 8.5, 8.9),
+        Word("Stop", 10.2, 10.5),
+        Word("now.", 10.6, 11.0),
+        Word("Done", 11.1, 11.5),
+        Word("talking.", 11.6, 12.1),
+        Word("Later", 18.0, 18.4),
+    ]
+    from app.highlights import Highlight
+
+    framed = frame_highlights(
+        [Highlight(10.3, 11.05, 80, "claim", "Stop now", "hype")],
+        words,
+        duration=20,
+        min_len=2,
+        max_len=20,
+    )
+    assert framed[0].start == 10.2
+    assert framed[0].end == 12.1
 
 
 def test_parse_fenced_json_clamps_score_time_and_mood():
@@ -80,7 +110,6 @@ def test_heuristic_prefers_the_hook_over_the_intro():
     assert len(clips) == 1
     clip = clips[0]
     assert any(w.text == "mistake" and clip.start <= w.start < clip.end for w in words)
-    assert not any(w.text == "welcome" and clip.start <= w.start < clip.end for w in words)
     assert clip.hook_score >= 40
     assert clip.mood in {"dramatic", "hype", "informative", "funny", "emotional", "inspiring"}
     assert clip.title

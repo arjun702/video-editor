@@ -16,6 +16,8 @@ def trim_fillers_and_silence(
     max_gap: float = 0.4,
     pad: float = 0.04,
     min_keep: float = 0.12,
+    hold: float = 0.0,
+    protect: float = 0.0,
 ) -> list[tuple[float, float]]:
     """Return source-time ranges to keep inside [clip_start, clip_end]."""
     selected = [
@@ -63,4 +65,11 @@ def trim_fillers_and_silence(
         right = clamp(end + pad, clip_start, clip_end)
         if right - left > 0:
             padded.append((left, right))
+    if hold > 0 and padded:
+        left, right = padded[-1]
+        padded[-1] = (left, clamp(right + hold, clip_start, clip_end))
+    if protect > 0:
+        head_end = min(clip_end, clip_start + protect)
+        tail_start = max(clip_start, clip_end - protect)
+        padded = [(clip_start, head_end), *padded, (tail_start, clip_end)]
     return merge_ranges(padded, gap=0.0)

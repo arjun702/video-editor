@@ -12,7 +12,6 @@ from app.highlights import Highlight
 from app.media import MediaError, probe, run_ffmpeg
 from app.mlt import build_mlt
 from app.reframe import crop_size, crop_x_expression, crop_y_expression
-from app.silence import trim_fillers_and_silence
 from app.transcript import Word
 
 FONTS_DIR = Path(__file__).resolve().parent / "assets" / "fonts"
@@ -37,11 +36,13 @@ def render_clip(
 ) -> float:
     """Render one vertical clip. Returns the output duration in seconds."""
     source_info = probe(source)
-    segments = trim_fillers_and_silence(
-        words, highlight.start, highlight.end, max_gap=0.42, pad=0.05
-    )
-    if not segments:
-        segments = [(highlight.start, highlight.end)]
+    # ponytail: jump cuts off; restore trim_fillers_and_silence if we want them back
+    pad = 0.5
+    start = max(0.0, highlight.start - pad)
+    end = min(source_info.duration, highlight.end + pad)
+    if end <= start:
+        start, end = highlight.start, highlight.end
+    segments = [(start, end)]
 
     work = out_path.parent / f".work-{out_path.stem}"
     if work.exists():

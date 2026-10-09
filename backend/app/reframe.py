@@ -56,16 +56,11 @@ def crop_x_expression(
         return int(round(clamp(center - crop_w / 2, 0, max_x)))
 
     edges = [left_edge(center) for _, center in points]
+    middle = sorted(edges)[len(edges) // 2]
     if max(edges) - min(edges) < pan_threshold:
-        middle = sorted(edges)[len(edges) // 2]
         return str(middle)
-
-    duration = points[-1][0] - points[0][0]
-    start = left_edge(points[0][1])
-    end = left_edge(points[-1][1])
-    if duration <= 0.05:
-        return str(start)
-    return f"{start}+({end - start})*min(max(t/{duration:.3f}\\,0)\\,1)"
+    # Stay on the main face. A start-to-end lerp sweeps across everyone else.
+    return str(middle)
 
 
 def crop_y_expression(frame_h: int, crop_h: int) -> str:
@@ -101,7 +96,8 @@ def track_subject(
     cascade = cv2.CascadeClassifier(
         cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
     )
-    raw: list[tuple[float, float, str]] = []
+    faces: list[tuple[float, float, float]] = []
+    motion: list[tuple[float, float]] = []
     previous = None
     moment = start
     try:
@@ -111,21 +107,40 @@ def track_subject(
             if not ok or frame is None:
                 break
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            faces = cascade.detectMultiScale(
+            hits = cascade.detectMultiScale(
                 gray, scaleFactor=1.1, minNeighbors=4, minSize=(40, 40)
             )
-            if len(faces):
-                x, y, width, height = max(faces, key=lambda face: face[2] * face[3])
-                raw.append((moment - start, float(x + width / 2.0), "face"))
+            if len(hits):
+                x, y, width, height = max(hits, key=lambda face: face[2] * face[3])
+                faces.append((moment - start, float(x + width / 2.0), float(width * height)))
             elif previous is not None:
                 center = motion_center(previous, gray)
                 if center is not None:
-                    raw.append((moment - start, float(center[0]), "motion"))
+                    motion.append((moment - start, float(center[0])))
             previous = gray
             moment += sample_every
     finally:
         capture.release()
 
-    faces = [(moment, center) for moment, center, kind in raw if kind == "face"]
-    series = faces if len(faces) >= 2 else [(moment, center) for moment, center, _ in raw]
+    series = lock_to_biggest_face(faces)
+    if len(series) < 2:
+        series = motion
     return smooth_centers(series, window=3)
+
+
+def lock_to_biggest_face(
+    faces: list[tuple[float, float, float]],
+    radius: float = 180.0,
+) -> list[tuple[float, float]]:
+    """Keep samples that sit on the largest face. Ignore other people in the shot."""
+    if not faces:
+        return []
+    _, lock_x, _ = max(faces, key=lambda item: item[2])
+    locked = [
+        (moment, center)
+        for moment, center, area in faces
+        if abs(center - lock_x) <= radius
+    ]
+    if not locked:
+        return [(faces[0][0], lock_x), (faces[-1][0], lock_x)]
+    return locked

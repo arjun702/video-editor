@@ -75,8 +75,16 @@ def parse_highlight_response(
             payload.get("clips")
             or payload.get("highlights")
             or payload.get("moments")
+            or payload.get("clip")
             or []
         )
+        if not items:
+            for value in payload.values():
+                if isinstance(value, list) and value and isinstance(value[0], dict):
+                    items = value
+                    break
+        if not items and ("start" in payload or "start_time" in payload):
+            items = [payload]
     else:
         return []
 
@@ -86,6 +94,18 @@ def parse_highlight_response(
         if highlight is not None:
             parsed.append(highlight)
     return _take_non_overlapping(parsed, limit)
+
+
+def frame_highlights(
+    highlights: list[Highlight],
+    words: list[Word],
+    *,
+    duration: float,
+    min_len: float,
+    max_len: float,
+) -> list[Highlight]:
+    framed = [_frame_window(item, words, duration, min_len, max_len) for item in highlights]
+    return _take_non_overlapping(framed, len(framed))
 
 
 def heuristic_highlights(
@@ -124,7 +144,74 @@ def heuristic_highlights(
                 mood=infer_mood(" ".join(word.text for word in chunk)),
             )
         )
-    return _take_non_overlapping(ranked, count)
+    framed = [_frame_window(item, words, duration, min_len, max_len) for item in ranked]
+    return _take_non_overlapping(framed, count)
+
+
+def _frame_window(
+    item: Highlight,
+    words: list[Word],
+    duration: float,
+    min_len: float,
+    max_len: float,
+    *,
+    slack: float = 5.0,
+    pause: float = 0.35,
+) -> Highlight:
+    """Nudge Gemini's in/out to a nearby pause or word edge. Do not add extra footage."""
+    if duration <= 0 or not words:
+        return item
+    ordered = sorted(words, key=lambda word: word.start)
+    start = _snap_start(ordered, item.start, slack=slack, pause=pause)
+    end = _snap_end(ordered, item.end, duration, slack=slack, pause=pause)
+    if end <= start:
+        return item
+    return Highlight(
+        start=round(start, 3),
+        end=round(end, 3),
+        hook_score=item.hook_score,
+        reason=item.reason,
+        title=item.title,
+        mood=item.mood,
+    )
+
+
+def _snap_start(words: list[Word], t: float, *, slack: float, pause: float) -> float:
+    floor = max(0.0, t - slack)
+    start = t
+    prev: Word | None = None
+    for word in words:
+        if word.start >= t:
+            if word.start <= t <= word.end:
+                start = word.start
+            break
+        if word.start <= t <= word.end:
+            start = word.start
+        if prev is not None and word.start - prev.end >= pause and word.start >= floor:
+            start = word.start
+        prev = word
+    return max(floor, start)
+
+
+def _snap_end(words: list[Word], t: float, duration: float, *, slack: float, pause: float) -> float:
+    ceiling = min(duration, t + slack)
+    end = t
+    prev: Word | None = None
+    for word in words:
+        if word.end < t:
+            prev = word
+            continue
+        if word.start <= t <= word.end:
+            end = word.end
+            prev = word
+            continue
+        if word.start > ceiling:
+            break
+        if prev is not None and word.start - prev.end >= pause:
+            break
+        end = min(ceiling, word.end)
+        prev = word
+    return min(duration, end)
 
 
 def infer_mood(text: str) -> str:
@@ -297,6 +384,21 @@ def _extract_json(text: str):
         return None
 
 
+def _as_seconds(value: object) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        raise ValueError("empty time")
+    if ":" in text:
+        parts = [float(bit) for bit in text.split(":")]
+        seconds = 0.0
+        for bit in parts:
+            seconds = seconds * 60 + bit
+        return seconds
+    return float(text)
+
+
 def _coerce_highlight(
     item: object,
     *,
@@ -307,18 +409,16 @@ def _coerce_highlight(
     if not isinstance(item, dict):
         return None
     try:
-        start = float(item.get("start", item.get("start_time", item.get("from"))))
-        end = float(item.get("end", item.get("end_time", item.get("to"))))
-        score = float(item.get("hook_score", item.get("hookScore", item.get("score", 0))))
+        start = _as_seconds(item.get("start", item.get("start_time", item.get("from"))))
+        end = _as_seconds(item.get("end", item.get("end_time", item.get("to"))))
+        score = float(item.get("hook_score", item.get("hookScore", item.get("score", 0))) or 0)
     except (TypeError, ValueError):
         return None
     start = clamp(start, 0.0, duration)
     end = clamp(end, 0.0, duration)
     if end <= start:
         return None
-    if end - start > max_len:
-        end = start + max_len
-    if end > duration or end - start < min_len:
+    if end - start < max(5.0, min_len - 5):
         return None
     mood = str(item.get("mood", "informative")).strip().lower()
     if mood not in MOODS:

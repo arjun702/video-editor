@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from app.reframe import crop_size, crop_x_expression, motion_center, smooth_centers
+from app.reframe import crop_size, crop_x_expression, lock_to_biggest_face, motion_center, smooth_centers
 
 
 def test_landscape_frame_crops_to_nine_sixteen():
@@ -33,9 +33,22 @@ def test_crop_x_centers_a_steady_subject():
     assert crop_x_expression([(0.0, 1200.0), (2.0, 1200.0)], crop_w=600, frame_w=1920) == "900"
 
 
-def test_crop_x_pans_when_the_subject_crosses_the_frame():
+def test_crop_x_holds_a_fixed_offset_instead_of_panning_across_the_frame():
     expr = crop_x_expression([(0.0, 400.0), (2.0, 1600.0)], crop_w=600, frame_w=1920)
-    assert expr == r"100+(1200)*min(max(t/2.000\,0)\,1)"
+    assert expr == "1300"
+
+
+def test_lock_to_biggest_face_ignores_the_smaller_person():
+    samples = [
+        (0.0, 400.0, 2000.0),
+        (0.4, 420.0, 2100.0),
+        (0.8, 1500.0, 8000.0),
+        (1.2, 1510.0, 8200.0),
+        (1.6, 390.0, 1900.0),
+    ]
+    locked = lock_to_biggest_face(samples)
+    xs = [center for _, center in locked]
+    assert xs == [1500.0, 1510.0]
 
 
 def test_missing_track_falls_back_to_center_crop():

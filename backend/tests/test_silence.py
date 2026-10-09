@@ -44,6 +44,28 @@ def test_only_fillers_produces_no_ranges():
     assert trim_fillers_and_silence(words, 0.0, 2.0) == []
 
 
+def test_protect_keeps_the_open_and_close_uncut():
+    words = [
+        w("Hello", 1.0, 1.3),
+        w("there", 3.0, 3.4),
+        w("now", 8.0, 8.4),
+        w("bye", 10.5, 11.0),
+    ]
+    ranges = trim_fillers_and_silence(
+        words, 0.0, 12.0, max_gap=0.4, pad=0.0, protect=2.0
+    )
+    assert ranges[0][0] == 0.0
+    assert ranges[0][1] >= 2.0
+    assert ranges[-1][1] == 12.0
+    assert ranges[-1][0] <= 10.0
+
+
+def test_hold_keeps_air_after_the_last_word():
+    words = [w("Stop", 0.0, 0.3), w("now", 0.4, 0.8)]
+    ranges = trim_fillers_and_silence(words, 0.0, 3.0, max_gap=0.4, pad=0.0, hold=0.7)
+    assert ranges == [(0.0, 1.5)]
+
+
 def test_words_outside_the_clip_are_ignored():
     words = [w("before", 0.0, 0.4), w("inside", 5.0, 5.4), w("after", 9.0, 9.3)]
     ranges = trim_fillers_and_silence(words, 4.5, 6.0, max_gap=0.4, pad=0.0)

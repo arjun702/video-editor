@@ -72,6 +72,8 @@ def process_source(
     info = probe(source)
     if info.duration <= 0:
         raise MediaError("Could not read a duration for that video.")
+    if not info.has_audio:
+        raise MediaError("This video has no audio track, so there is nothing to transcribe.")
 
     stage("transcribing", 0.08, "Listening for words")
     if words is None:
