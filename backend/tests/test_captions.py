@@ -90,3 +90,20 @@ def test_xfade_overlap_pulls_the_next_word_earlier():
     )
     # Segment 1 begins at 2.0 - 0.2 on the output clock.
     assert "0:00:01.80" in ass
+
+
+def test_long_hook_title_wraps_onto_two_lines():
+    words = [Word("Stop", 0.0, 0.4)]
+    ass = build_ass(
+        words,
+        segments=[(0.0, 0.4)],
+        xfade=0.0,
+        style="hormozi",
+        title="Stop scrolling the biggest mistake is hiring",
+        width=720,
+        height=1280,
+    )
+    assert r"\N" in ass
+    assert "STOP SCROLLING THE BIGGEST" in ass
+    assert "MISTAKE IS HIRING" in ass
+    assert "STOP SCROLLING THE BIGGEST MISTAKE IS HIRING" not in ass

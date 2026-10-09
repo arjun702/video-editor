@@ -229,7 +229,7 @@ def _public_score(raw: float) -> float:
 def _title(words: list[Word]) -> str:
     if not words:
         return "Untitled hook"
-    size = min(7, len(words))
+    size = min(6, len(words))
     best_score = -1.0
     best: list[Word] | None = None
     for index in range(0, len(words) - size + 1):
@@ -242,9 +242,11 @@ def _title(words: list[Word]) -> str:
     chosen = list(best or words[:size])
     while len(chosen) > 3 and HOOK_WEIGHTS.get(normalize_token(chosen[0].text), 0) == 0:
         chosen = chosen[1:]
+    if len(chosen) > 5:
+        chosen = chosen[:5]
     text = re.sub(r"\s+", " ", " ".join(word.text.strip() for word in chosen)).strip(" .,-")
-    if len(text) > 72:
-        text = text[:71].rstrip() + "…"
+    if len(text) > 48:
+        text = text[:47].rstrip() + "…"
     if not text:
         return "Untitled hook"
     return text[:1].upper() + text[1:]

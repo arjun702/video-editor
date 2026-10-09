@@ -59,7 +59,7 @@ def build_ass(
     title_size = max(24, int(height * preset["title_ratio"]))
     caption_margin = int(height * 0.17)
     title_margin = int(height * 0.075)
-    events = _events(timed, preset, title, title_seconds)
+    events = _events(timed, preset, title, title_seconds, width=width)
     return f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
@@ -70,7 +70,7 @@ ScaledBorderAndShadow: yes
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Caption,{preset["font"]},{font_size},{preset["base"]},&H000000FF,&H00000000,&H64000000,-1,0,0,0,100,100,{preset["spacing"]},0,1,{preset["outline"]},{preset["shadow"]},2,70,70,{caption_margin},1
-Style: Title,{preset["font"]},{title_size},&H00FFFFFF,&H000000FF,&H00101010,&H00000000,-1,0,0,0,100,100,0,0,1,8,0,8,48,48,{title_margin},1
+Style: Title,{preset["font"]},{title_size},&H00FFFFFF,&H000000FF,&H00101010,&H00000000,-1,0,0,0,100,100,0,0,1,8,0,8,56,56,{title_margin},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -83,9 +83,11 @@ def _events(
     preset: dict,
     title: str,
     title_seconds: float,
+    *,
+    width: int,
 ) -> str:
     lines: list[str] = []
-    shown_title = _present(title, preset["uppercase"])
+    shown_title = _wrap_title(_present(title, preset["uppercase"]), width=width)
     if shown_title:
         hold = title_seconds
         if words:
@@ -134,8 +136,29 @@ def _present(text: str, uppercase: bool) -> str:
     return cleaned
 
 
+def _wrap_title(text: str, *, width: int, max_chars: int | None = None) -> str:
+    """Keep the hook readable on a phone: two short lines, never one long bar."""
+    parts = text.split()
+    if not parts:
+        return text
+    budget = max_chars or max(14, width // 42)
+    if len(text) <= budget:
+        return text
+    if len(parts) == 1:
+        return text
+    mid = max(1, (len(parts) + 1) // 2)
+    # Prefer a break after a strong first line when the front is short.
+    if mid > 2 and sum(len(part) for part in parts[: mid - 1]) + (mid - 2) <= budget:
+        mid -= 1
+    return " ".join(parts[:mid]) + r"\N" + " ".join(parts[mid:])
+
+
 def _escape(text: str) -> str:
-    return text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
+    # Keep ASS hard-break markers (\N) intact while escaping everything else.
+    return r"\N".join(
+        part.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
+        for part in text.split(r"\N")
+    )
 
 
 def _ass_time(seconds: float) -> str:
