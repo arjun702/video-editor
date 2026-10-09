@@ -239,7 +239,9 @@ def _title(words: list[Word]) -> str:
         if score > best_score:
             best_score = score
             best = chunk
-    chosen = best or words[:size]
+    chosen = list(best or words[:size])
+    while len(chosen) > 3 and HOOK_WEIGHTS.get(normalize_token(chosen[0].text), 0) == 0:
+        chosen = chosen[1:]
     text = re.sub(r"\s+", " ", " ".join(word.text.strip() for word in chosen)).strip(" .,-")
     if len(text) > 72:
         text = text[:71].rstrip() + "…"

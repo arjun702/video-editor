@@ -38,8 +38,8 @@ def merge_ranges(
 
 
 def words_in_range(words: list[Word], start: float, end: float) -> list[Word]:
-    """Words that overlap the half-open interval [start, end)."""
-    return [word for word in words if word.start < end and word.end > start]
+    """Words that overlap [start, end). A word ending on start still counts; one starting on end does not."""
+    return [word for word in words if word.start < end and word.end >= start]
 
 
 def snap_range_to_words(
